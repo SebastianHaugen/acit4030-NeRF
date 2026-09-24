@@ -1,5 +1,5 @@
-data/
-outputs/
-__pycache__/
-*.pth
-.ipynb_checkpoints/
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+baseline/intermediate_*.png
