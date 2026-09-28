@@ -4,7 +4,7 @@ import torch
 import numpy as np
 from PIL import Image
 from pytorch3d.renderer import FoVPerspectiveCameras
-import torch.nn.functional as F # Import for torch.nn.functional.interpolate
+import torch.nn.functional as F
 
 def load_nerf_data(data_dir, split="train", device="cpu", znear=0.01, zfar=10.0, resize_to=None):
     """
@@ -183,8 +183,9 @@ def load_nerf_data(data_dir, split="train", device="cpu", znear=0.01, zfar=10.0,
         R_nerf = c2w[:3, :3] # Rotation part of camera-to-world
         T_nerf = c2w[:3, 3] # Translation part of camera-to-world
 
-        R_pytorch3d = R_nerf.T
-        T_pytorch3d = -R_pytorch3d @ T_nerf
+        flip = torch.diag(torch.tensor([-1.0, 1.0, -1.0], device=device))  # OpenGL -> PyTorch3D axes
+        R_pytorch3d = R_nerf @ flip
+        T_pytorch3d = -R_pytorch3d.T @ T_nerf
 
         Rs.append(R_pytorch3d)
         Ts.append(T_pytorch3d)
