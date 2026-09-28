@@ -74,5 +74,5 @@ Notes:
 
 ## Group
 
-- [Name]
-- [Name]
+- Mats Aakvik Johansen
+- Sebastian Skrøvseth Haugen
