@@ -1,11 +1,12 @@
+"""
+Training script for the NeRF baseline on the lego and poster datasets.
+Adapted from Chapter 6 of the course book / the PyTorch3D NeRF tutorial.
+"""
+
 import torch
-from pytorch3d.transforms import so3_exp_map
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
-"""
-Code from the baseline, this will be changed so it will work on the dataset with lego and posters
-"""
 
 def huber(x, y, scaling=0.1):
     """
@@ -16,15 +17,19 @@ def huber(x, y, scaling=0.1):
     loss = ((1 + diff_sq / (scaling**2)).clamp(1e-4).sqrt() - 1) * float(scaling)
     return loss
 
+
 def sample_images_at_mc_locs(target_images, sampled_rays_xy):
     """
     Given a set of Monte Carlo pixel locations `sampled_rays_xy`,
     this method samples the tensor `target_images` at the
     respective 2D locations.
-    
+
     This function is used in order to extract the colors from
     ground truth images that correspond to the colors
     rendered using `MonteCarloRaysampler`.
+
+    TODO: assumes square images. For non-square images (poster),
+    the x coordinates must be rescaled to [-1, 1] before grid_sample.
     """
     ba = target_images.shape[0]
     dim = target_images.shape[-1]
@@ -32,14 +37,14 @@ def sample_images_at_mc_locs(target_images, sampled_rays_xy):
     # In order to sample target_images, we utilize
     # the grid_sample function which implements a
     # bilinear image sampler.
-    # Note that we have to invert the sign of the 
+    # Note that we have to invert the sign of the
     # sampled ray positions to convert the NDC xy locations
     # of the MonteCarloRaysampler to the coordinate
     # convention of grid_sample.
     images_sampled = torch.nn.functional.grid_sample(
-        target_images.permute(0, 3, 1, 2), 
+        target_images.permute(0, 3, 1, 2),
         -sampled_rays_xy.view(ba, -1, 1, 2),  # note the sign inversion
-        align_corners=True
+        align_corners=True,
     )
     return images_sampled.permute(0, 2, 3, 1).view(
         ba, *spatial_size, dim
