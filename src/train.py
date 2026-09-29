@@ -45,8 +45,8 @@ DATASETS = {
     "poster": {
         "path": ROOT / "data" / "poster",
         "resize_to": (320, 180),   # portrait, keeps the original 16:9 aspect ratio
-        "min_depth": 0.1,          # TODO: tune from camera positions / sparse_pc.ply
-        "max_depth": 6.0,
+        "min_depth": 0.2,          # TODO: tune from camera positions / sparse_pc.ply
+        "max_depth": 10.0,
         "use_silhouette": False,   # real photos, no masks
         "has_splits": False,       # only transforms.json
         "test_every": 8,           # every 8th image is held out for testing
