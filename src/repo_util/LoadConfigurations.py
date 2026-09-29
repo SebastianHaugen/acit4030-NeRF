@@ -1,11 +1,34 @@
-#Imports
+# Imports
+from pathlib import Path
 import yaml
 
-#Loading config yaml
-with open("config.yaml", "r") as f:
-    config = yaml.safe_load(f)
 
-#Retriving values
-preview = config["preview"]["the-preview"]
+# Configuration file
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 
-print(preview)
+with CONFIG_PATH.open("r", encoding="utf-8") as f:
+    CONFIG = yaml.safe_load(f)
+
+
+# Preview configuration
+PREVIEW_MESSAGE = CONFIG["preview"]["the-preview"]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+if __name__ == "__main__":
+    print(PREVIEW_MESSAGE)
