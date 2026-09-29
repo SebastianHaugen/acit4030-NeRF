@@ -219,8 +219,13 @@ __marimo__/
 
 
 #Other configs
+#Ignore all 'data' folder content
 data/*
+#But keep this file so Git can track the 'data' folder
 !data/.gitkeep
+#Ignore all 'output' folder content
 outputs/*
+#But keep this file so Git can track the 'output' folder
 !outputs/.gitkeep
+
 baseline/intermediate_*.png
