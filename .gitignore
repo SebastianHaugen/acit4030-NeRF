@@ -223,9 +223,11 @@ __marimo__/
 data/*
 #But keep this file so Git can track the 'data' folder
 !data/.gitkeep
+
 #Ignore all 'output' folder content
 outputs/*
 #But keep this file so Git can track the 'output' folder
 !outputs/.gitkeep
+!outputs/results.csv
 
 baseline/intermediate_*.png

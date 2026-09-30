@@ -11,8 +11,8 @@ Group project for ACIT4030 Machine Learning for 3D Computer Vision, OsloMet.
 
 - [ ] Read Chapters 4, 5 and 6 of the course book ([corresponding PyTorch3D tutorials](https://pytorch3d.org/tutorials/))
 - [x] Import the Chapter 6 code (a simplified NeRF model) as the baseline for the final project
-- [ ] Adapt the NeRF tutorial to load the project datasets
-- [ ] Implement evaluation metrics for quantitative evaluation
+- [x] Adapt the NeRF tutorial to load the project datasets
+- [x] Implement evaluation metrics for quantitative evaluation
 - [ ] Write a report (max 10 pages) describing the baseline and presenting qualitative and quantitative results on lego and poster
 
 ## Project structure
@@ -37,7 +37,7 @@ acit4030-nerf/
 │   ├── load_nerf_data.py     # provided loader for lego/poster
 │   ├── model.py              # NeRF model
 │   ├── train.py              # training on lego/poster
-│   ├── render.py             # render test views / novel-view trajectories
+│   ├── evaluate.py           # render test views, compute metrics, save figures
 │   └── metrics.py            # PSNR, SSIM, LPIPS
 │
 ├── notebooks/                # exploration and sanity checks
@@ -58,6 +58,20 @@ The course dataset (`acit4030-data.zip`) contains:
 - `load_nerf_data`: utility function that loads both into a PyTorch3D-compatible format
 
 The data is not included in this repository. Extract it into `data/`.
+
+## Training and evaluation
+
+```bash
+python src/train.py --dataset lego --n_iter 20000 --batch_size 4
+python src/evaluate.py --dataset lego                 # test split
+python src/evaluate.py --dataset lego --split train   # optional, to compare with train PSNR
+```
+
+Same for `--dataset poster`. The lego test split is `transforms_test.json`; for poster every 8th image is held out.
+
+- `train.py` writes `model.pth`, `config.json`, `losses.json` and intermediate renders to `outputs/<dataset>/`.
+- `evaluate.py` writes `metrics_<split>.json` (per-view and mean PSNR/SSIM/LPIPS) and `renders_<split>/` to `outputs/<dataset>/`, and `<dataset>_comparison.png` and `<dataset>_loss.png` to `report/figures/`.
+- `batch_size 4` fits an 8 GB GPU; use 2 for 4 GB.
 
 ## Running the baseline
 

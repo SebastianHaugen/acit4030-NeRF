@@ -8,6 +8,9 @@ tqdm
 # PyTorch3D and its dependencies
 # PyTorch3D is not reliably installable from PyPI, especially on Windows.
 # Install it separately, following https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+# With torch >= 2.10 the build needs C++20: clone the repo, replace -std=c++17 with
+# -std=c++20 in setup.py, then `pip install --no-build-isolation .`
+# (FORCE_CUDA=0 works if nvcc is missing; the NeRF renderer is pure PyTorch and still runs on the GPU)
 # pytorch3d
 iopath
 fvcore

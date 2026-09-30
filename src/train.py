@@ -9,6 +9,7 @@ Usage (from the repo root):
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import torch
@@ -27,6 +28,7 @@ from pytorch3d.renderer import (
 
 from model import NeuralRadianceField
 from load_nerf_data import load_nerf_data
+from metrics import Evaluator, write_csv
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -45,8 +47,10 @@ DATASETS = {
     "poster": {
         "path": ROOT / "data" / "poster",
         "resize_to": (320, 180),   # portrait, keeps the original 16:9 aspect ratio
-        "min_depth": 0.2,          # TODO: tune from camera positions / sparse_pc.ply
-        "max_depth": 10.0,
+        # From projecting sparse_pc.ply into all cameras: visible point depths
+        # are 2.2 (1st pct), 4.2 (median), 11.0 (95th pct), 13.8 (99th pct)
+        "min_depth": 1.5,
+        "max_depth": 12.0,
         "use_silhouette": False,   # real photos, no masks
         "has_splits": False,       # only transforms.json
         "test_every": 8,           # every 8th image is held out for testing
@@ -175,6 +179,7 @@ def main():
     parser.add_argument("--n_pts", type=int, default=128)      # samples per ray
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--vis_every", type=int, default=100)
+    parser.add_argument("--n_eval_views", type=int, default=5)  # held-out views scored at every vis step
     args = parser.parse_args()
 
     cfg = DATASETS[args.dataset]
@@ -190,6 +195,16 @@ def main():
     imgs, sils, cams = load_split(cfg, "train", device)
     n_views, height, width = imgs.shape[:3]
     print(f"Training on {n_views} views of size {height}x{width}")
+
+    # A few evenly spaced held-out views, scored during training
+    test_imgs, test_sils, test_cams = load_split(cfg, "test", device)
+    eval_idx = torch.linspace(0, len(test_imgs) - 1, args.n_eval_views).round().long().tolist()
+    # Building LPIPS initialises AlexNet with random weights before loading the
+    # pretrained ones. Fork the RNG so that this does not change the NeRF
+    # initialisation (the baseline is sensitive to it and can collapse to an
+    # empty scene with some seeds).
+    with torch.random.fork_rng(devices=[]):
+        evaluator = Evaluator(device=device)
 
     # NDC extent: [-1, 1] on the shorter side, [-s, s] on the longer side
     sx = max(width / height, 1.0)
@@ -218,16 +233,25 @@ def main():
     # 5. Model and optimizer
     model = NeuralRadianceField().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {n_params:,}")
 
     # 6. Training loop
     hist_color, hist_sil = [], []
+    loss_rows, eval_rows = [], []
     vis_idx = 0  # fixed view for the intermediate renders, so they are comparable
+    current_lr = args.lr
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    t_start = time.perf_counter()
+    t_eval = 0.0  # time spent on evaluation, excluded from the training time
 
     for iteration in tqdm(range(args.n_iter)):
         if iteration == round(args.n_iter * 0.75):
             # As in the baseline: re-creating the optimizer also resets Adam's state
             tqdm.write("Decreasing LR 10-fold ...")
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1)
+            current_lr = args.lr * 0.1
+            optimizer = torch.optim.Adam(model.parameters(), lr=current_lr)
 
         optimizer.zero_grad()
         batch_idx = torch.randperm(n_views)[: args.batch_size]
@@ -254,12 +278,46 @@ def main():
         loss.backward()
         optimizer.step()
 
+        loss_rows.append({
+            "iteration": iteration,
+            "lr": current_lr,
+            "loss_total": float(loss),
+            "loss_color": float(color_err),
+            "loss_silhouette": hist_sil[-1] if hist_sil else "",
+        })
+
         if iteration % args.vis_every == 0 or iteration == args.n_iter - 1:
+            t0 = time.perf_counter()
             rgb, _ = render_full(model, renderer_grid, cams[[vis_idx]])
             save_intermediate(
                 out_dir / f"intermediate_{iteration:05d}.png",
                 rgb, imgs[vis_idx], hist_color, hist_sil, iteration,
             )
+
+            # Score the held-out views
+            scores = []
+            for i in eval_idx:
+                rgb, alpha = render_full(model, renderer_grid, test_cams[[i]])
+                gt_mask = test_sils[i] if cfg["use_silhouette"] else None
+                scores.append(evaluator(rgb, test_imgs[i], alpha[..., 0], gt_mask))
+            t_eval += time.perf_counter() - t0
+
+            row = {
+                "iteration": iteration,
+                "train_time_s": round(time.perf_counter() - t_start - t_eval, 2),
+                "lr": current_lr,
+                "loss_color_avg100": sum(hist_color[-100:]) / len(hist_color[-100:]),
+            }
+            row.update({f"test_{k}": sum(s[k] for s in scores) / len(scores) for k in scores[0]})
+            eval_rows.append(row)
+            write_csv(out_dir / "training_eval.csv", eval_rows)
+            tqdm.write(
+                f"[{iteration:6d}] held-out PSNR {row['test_psnr']:.2f}  "
+                f"SSIM {row['test_ssim']:.3f}  LPIPS {row['test_lpips']:.3f}"
+            )
+
+    train_time = time.perf_counter() - t_start - t_eval
+    peak_mem_mb = torch.cuda.max_memory_allocated(device) / 2**20 if device.type == "cuda" else 0.0
 
     # 7. Save
     torch.save(model.state_dict(), out_dir / "model.pth")
@@ -268,6 +326,22 @@ def main():
         json.dump(config, f, indent=2)
     with open(out_dir / "losses.json", "w") as f:
         json.dump({"color": hist_color, "silhouette": hist_sil}, f)
+    write_csv(out_dir / "losses.csv", loss_rows)
+    write_csv(out_dir / "training_summary.csv", [{
+        "dataset": args.dataset,
+        "n_train_views": n_views,
+        "image_height": height,
+        "image_width": width,
+        "n_iter": args.n_iter,
+        "batch_size": args.batch_size,
+        "n_rays": args.n_rays,
+        "n_pts": args.n_pts,
+        "model_parameters": n_params,
+        "train_time_s": round(train_time, 1),
+        "iterations_per_s": round(args.n_iter / train_time, 2),
+        "peak_gpu_memory_mb": round(peak_mem_mb, 1),
+        "final_loss_color_avg100": sum(hist_color[-100:]) / len(hist_color[-100:]),
+    }])
 
     print(f"Done. Model and renders saved to {out_dir}")
 
