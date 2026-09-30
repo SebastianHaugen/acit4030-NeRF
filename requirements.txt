@@ -1,1 +1,8 @@
+numpy
+Pillow
+matplotlib
+tqdm
 pyyaml
+ipykernel
+
+# On Colab torch and pytorch 3d has to be build
