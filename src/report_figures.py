@@ -13,6 +13,7 @@ import csv
 
 import matplotlib.pyplot as plt
 import yaml
+from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 
 from src.repo_util.LoadConfigurations import (
     DATASET_NAMES,
@@ -72,34 +73,42 @@ def plot_loss_curves():
         return
 
     plt.rcParams.update({"font.size": 8, "font.family": "sans-serif"})
-    fig, ax = plt.subplots(figsize=(IEEE_COLUMN_WIDTH_IN, 2.3))
-
-    for dataset, losses in curves.items():
+    # One panel per dataset: the datasets train for different numbers of iterations,
+    # so a shared x-axis would squeeze the shorter run into a corner.
+    fig, axes = plt.subplots(
+        len(curves), 1, figsize=(IEEE_COLUMN_WIDTH_IN, 1.6 * len(curves)), squeeze=False,
+    )
+    for ax, (dataset, losses) in zip(axes[:, 0], curves.items()):
         smoothed = moving_average(losses, LOSS_SMOOTHING_WINDOW)
-        color = DATASET_COLORS.get(dataset, TEXT_COLOR)
-        ax.plot(range(len(smoothed)), smoothed, color=color, linewidth=1.2, label=dataset)
-        # Direct label at the end of each line, in text colour (identity comes from the line).
-        ax.annotate(dataset, (len(smoothed) - 1, smoothed[-1]), xytext=(4, 0),
-                    textcoords="offset points", va="center", fontsize=7, color=TEXT_COLOR)
+        ax.plot(range(len(smoothed)), smoothed,
+                color=DATASET_COLORS.get(dataset, TEXT_COLOR), linewidth=1.2)
+        ax.set_title(dataset.capitalize(), fontsize=8, loc="left", color=TEXT_COLOR)
 
-    decay_points = {lr_decay_iteration(d) for d in curves} - {None}
-    for it in decay_points:
-        ax.axvline(it, color="#888888", linewidth=0.8, linestyle="--")
-        ax.annotate("LR ÷10", (it, 1.0), xycoords=("data", "axes fraction"), xytext=(-3, -8),
-                    textcoords="offset points", ha="right", fontsize=7, color=TEXT_COLOR)
+        decay = lr_decay_iteration(dataset)
+        if decay is not None:
+            ax.axvline(decay, color="#888888", linewidth=0.8, linestyle="--")
+            ax.annotate("LR ÷10", (decay, 1.0), xycoords=("data", "axes fraction"),
+                        xytext=(3, -8), textcoords="offset points", fontsize=7, color=TEXT_COLOR)
 
-    ax.set_yscale("log")
-    ax.set_xlabel("Iteration")
-    ax.set_ylabel(f"Colour loss ({LOSS_SMOOTHING_WINDOW}-it. average)")
-    ax.grid(True, which="major", color=GRID_COLOR, linewidth=0.6)
-    ax.set_axisbelow(True)
-    for side in ("top", "right"):
-        ax.spines[side].set_visible(False)
-    for side in ("left", "bottom"):
-        ax.spines[side].set_color("#999999")
-    ax.tick_params(colors=TEXT_COLOR, labelsize=7)
-    if len(curves) > 1:
-        ax.legend(frameon=False, fontsize=7, loc="lower left")
+        ax.set_yscale("log")
+        # Log scale with plain-number labels at 1-2-5 steps (0.02, 0.05, 0.1, ...).
+        ax.yaxis.set_major_locator(LogLocator(base=10, subs=(1.0, 2.0, 5.0)))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:g}"))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+        ax.set_xlim(0, len(smoothed))
+        ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x / 1000:g}k" if x else "0"))
+        ax.grid(True, which="both", axis="y", color=GRID_COLOR, linewidth=0.5)
+        ax.grid(True, which="major", axis="x", color=GRID_COLOR, linewidth=0.5)
+        ax.set_axisbelow(True)
+        for side in ("top", "right"):
+            ax.spines[side].set_visible(False)
+        for side in ("left", "bottom"):
+            ax.spines[side].set_color("#999999")
+        ax.tick_params(which="both", colors=TEXT_COLOR, labelsize=7)
+
+    axes[-1, 0].set_xlabel("Iteration")
+    fig.supylabel(f"Colour loss ({LOSS_SMOOTHING_WINDOW}-iteration average)", fontsize=8, x=0.02)
+    fig.tight_layout(h_pad=0.8)
 
     path = FIGURES_DIR / "loss_curves.pdf"
     fig.savefig(path, bbox_inches="tight")
