@@ -1,9 +1,13 @@
-# Install torch and pytorch3d manually first (must match your CUDA version):
-#   torch:     https://pytorch.org/get-started/locally/
+# Everything pip can install. Install with: pip install -r requirements.txt
+#
+# Installed separately (not in this file):
+#   torch:     must match your CUDA version, see https://pytorch.org/get-started/locally/
+#              (preinstalled on Colab)
 #   pytorch3d: https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
-#              (not reliably installable from PyPI, especially on Windows)
-# Colab: skip this file, torch and the core packages are preinstalled.
-#        Build pytorch3d, then: pip install torchmetrics lpips
+#              (on Colab: installed once to Drive, see the Colab notebook)
+#
+# Keep versions unpinned and do not add torch here: on Colab this file is installed on
+# top of the preinstalled torch, which the PyTorch3D build depends on.
 
 # Core
 numpy
