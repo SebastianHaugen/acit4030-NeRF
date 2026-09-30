@@ -76,3 +76,4 @@ Notes:
 
 - Mats Aakvik Johansen
 - Sebastian Skrøvseth Haugen
+- Jesse Kyomuhendo Tibamwenda

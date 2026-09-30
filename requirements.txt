@@ -1,8 +1,20 @@
+# Core
+torch            # install the CUDA build from https://pytorch.org/get-started/locally/
 numpy
-Pillow
+pillow
 matplotlib
 tqdm
-pyyaml
-ipykernel
 
-# On Colab torch and pytorch 3d has to be build
+# PyTorch3D and its dependencies
+# PyTorch3D is not reliably installable from PyPI, especially on Windows.
+# Install it separately, following https://github.com/facebookresearch/pytorch3d/blob/main/INSTALL.md
+# pytorch3d
+iopath
+fvcore
+
+# Evaluation metrics
+torchmetrics     # SSIM
+lpips            # LPIPS
+
+# Notebooks
+ipykernel
