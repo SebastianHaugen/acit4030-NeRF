@@ -1,21 +1,19 @@
 """
-Training script for the NeRF baseline on the lego and poster datasets.
-Adapted from Chapter 6 of the course book / the PyTorch3D NeRF tutorial.
+Train the baseline NeRF on the active dataset (lego or poster).
 
-Usage (from the repo root):
-    py src/train.py --dataset lego
-    py src/train.py --dataset poster
+Adapted from baseline/train_nerf.py (course book, Chapter 6). All settings
+come from config.yaml via repo_util/LoadConfigurations.py. Pick the dataset
+with `active_dataset` in config.yaml, then run from the project root:
+
+    python -m src.train
 """
+import csv
+import shutil
 
-import argparse
-import json
-from pathlib import Path
-
-import torch
-import torch.nn.functional as F
 import matplotlib
 matplotlib.use("Agg")  # save figures to disk without opening windows
 import matplotlib.pyplot as plt
+import torch
 from tqdm import tqdm
 from pytorch3d.renderer import (
     FoVPerspectiveCameras,
@@ -25,73 +23,90 @@ from pytorch3d.renderer import (
     ImplicitRenderer,
 )
 
-from model import NeuralRadianceField
-from load_nerf_data import load_nerf_data
+from src.load_nerf_data import load_nerf_data
+from src.model import NeuralRadianceField
+from src.repo_util.LoadConfigurations import (
+    CONFIG_PATH,
+    ACTIVE_DATASET,
+    DATA_DIR,
+    OUTPUT_DIR,
+    RESIZE_TO,
+    CAMERA_ZNEAR,
+    CAMERA_ZFAR,
+    RAY_MIN_DEPTH,
+    RAY_MAX_DEPTH,
+    USE_SILHOUETTE_LOSS,
+    TEST_EVERY,
+    N_RAYS_PER_IMAGE,
+    N_PTS_PER_RAY,
+    N_ITERATIONS,
+    BATCH_SIZE,
+    LEARNING_RATE,
+    LR_DECAY_AT,
+    LR_DECAY_FACTOR,
+    HUBER_SCALING,
+    RANDOM_SEED,
+    VISUALIZE_EVERY,
+    CHECKPOINT_EVERY,
+)
 
-ROOT = Path(__file__).resolve().parent.parent
-
-# ---------------------------------------------------------------------------
-# 1. Dataset settings
-# ---------------------------------------------------------------------------
-DATASETS = {
-    "lego": {
-        "path": ROOT / "data" / "lego",
-        "resize_to": (200, 200),   # (height, width)
-        "min_depth": 2.0,          # cameras are ~4.03 units from the object
-        "max_depth": 6.0,
-        "use_silhouette": True,    # alpha channel available, black background
-        "has_splits": True,        # transforms_train.json / transforms_test.json
-    },
-    "poster": {
-        "path": ROOT / "data" / "poster",
-        "resize_to": (320, 180),   # portrait, keeps the original 16:9 aspect ratio
-        "min_depth": 0.2,          # TODO: tune from camera positions / sparse_pc.ply
-        "max_depth": 10.0,
-        "use_silhouette": False,   # real photos, no masks
-        "has_splits": False,       # only transforms.json
-        "test_every": 8,           # every 8th image is held out for testing
-    },
-}
+PREVIEW_VIEW = 0  # fixed training view for the previews, so they are comparable over time
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-def huber(x, y, scaling=0.1):
-    """Smooth L1 (Huber) loss between rendered and target values."""
+# ------------------------------------------------------------
+# Helpers (huber and sample_images_at_mc_locs are from the baseline)
+# ------------------------------------------------------------
+def huber(x, y, scaling=HUBER_SCALING):
+    """
+    A helper function for evaluating the smooth L1 (huber) loss
+    between the rendered silhouettes and colors.
+    """
     diff_sq = (x - y) ** 2
     loss = ((1 + diff_sq / (scaling**2)).clamp(1e-4).sqrt() - 1) * float(scaling)
     return loss
 
 
-def sample_images_at_mc_locs(target_images, sampled_rays_xy, ndc_scale=(1.0, 1.0)):
+def sample_images_at_mc_locs(target_images, sampled_rays_xy, ndc_extent=(1.0, 1.0)):
     """
-    Sample `target_images` (B, H, W, C) at the NDC locations of the
-    Monte Carlo rays (B, ..., 2).
+    Given a set of Monte Carlo pixel locations `sampled_rays_xy`,
+    this method samples the tensor `target_images` at the
+    respective 2D locations.
 
-    For non-square images, PyTorch3D's NDC range is [-1, 1] on the shorter
-    side and [-s, s] on the longer side. `ndc_scale` = (sx, sy) rescales the
-    coordinates to [-1, 1] as expected by grid_sample. The sign is inverted
-    because PyTorch3D's NDC has +X left / +Y up, while grid_sample has
-    +X right / +Y down.
+    Change from the baseline: `ndc_extent` rescales the NDC coordinates
+    to the [-1, 1] range grid_sample expects. For square images it is
+    (1, 1), which gives exactly the baseline behaviour.
     """
     ba = target_images.shape[0]
     dim = target_images.shape[-1]
     spatial_size = sampled_rays_xy.shape[1:-1]
-    scale = sampled_rays_xy.new_tensor(ndc_scale)
-    grid = -sampled_rays_xy.view(ba, -1, 1, 2) / scale
-    images_sampled = F.grid_sample(
-        target_images.permute(0, 3, 1, 2), grid, align_corners=True
+    extent = torch.tensor(ndc_extent, device=sampled_rays_xy.device)
+    # Note the sign inversion: PyTorch3D NDC (+x left, +y up) vs grid_sample.
+    grid = -(sampled_rays_xy / extent)
+    images_sampled = torch.nn.functional.grid_sample(
+        target_images.permute(0, 3, 1, 2),
+        grid.view(ba, -1, 1, 2),
+        align_corners=True,
     )
     return images_sampled.permute(0, 2, 3, 1).view(ba, *spatial_size, dim)
+
+
+def ndc_extent_for(height, width):
+    """
+    PyTorch3D NDC convention: the shorter image side spans [-1, 1],
+    the longer side spans [-r, r] with r = long / short.
+    Returns (x_extent, y_extent).
+    """
+    if width >= height:
+        return (width / height, 1.0)
+    return (1.0, height / width)
 
 
 def fix_fov_for_aspect(cameras, height, width):
     """
     PyTorch3D applies the FoV of FoVPerspectiveCameras to the *shorter* image
     side, but load_nerf_data computes the vertical FoV. For portrait images
-    (width < height) we convert it to the horizontal FoV. Landscape and square
-    images are unchanged.
+    (width < height, e.g. poster) we convert it to the horizontal FoV.
+    Landscape and square images (lego) are unchanged.
     """
     if width >= height:
         return cameras
@@ -107,48 +122,67 @@ def fix_fov_for_aspect(cameras, height, width):
     )
 
 
-def load_split(cfg, split, device):
-    """Load the train or test split. For datasets without split files, every
-    `test_every`-th image is held out as the test set."""
-    if cfg["has_splits"]:
-        imgs, sils, cams = load_nerf_data(
-            str(cfg["path"]), split=split, resize_to=cfg["resize_to"]
-        )
-    else:
-        imgs, sils, cams = load_nerf_data(
-            str(cfg["path"]), split="train", resize_to=cfg["resize_to"]
-        )
-        idx = torch.arange(len(imgs))
-        is_test = idx % cfg["test_every"] == 0
-        keep = idx[is_test] if split == "test" else idx[~is_test]
-        imgs, sils, cams = imgs[keep], sils[keep], cams[keep.tolist()]
-
-    height, width = imgs.shape[1:3]
-    cams = fix_fov_for_aspect(cams, height, width)
-    # Bicubic resizing overshoots slightly outside [0, 1]
-    return imgs.clamp(0, 1).to(device), sils.clamp(0, 1).to(device), cams.to(device)
-
-
-@torch.no_grad()
-def render_full(model, renderer_grid, camera, n_batches=32):
-    """Render a full image for a single camera in chunks to save GPU memory."""
-    out, _ = renderer_grid(
-        cameras=camera,
-        volumetric_function=model.batched_forward,
-        n_batches=n_batches,
+def select_cameras(cameras, idx):
+    """Build a camera batch from a subset of indices (same as the baseline loop)."""
+    return FoVPerspectiveCameras(
+        R=cameras.R[idx],
+        T=cameras.T[idx],
+        znear=cameras.znear[idx],
+        zfar=cameras.zfar[idx],
+        aspect_ratio=cameras.aspect_ratio[idx],
+        fov=cameras.fov[idx],
+        device=cameras.device,
     )
-    rgb, alpha = out[0].split([3, 1], dim=-1)
-    return rgb.clamp(0, 1), alpha
 
 
-def save_intermediate(path, rendered, target, hist_color, hist_sil, iteration):
-    mse = ((rendered - target) ** 2).mean()
-    psnr = -10 * torch.log10(mse)
+def load_train_split(device):
+    """
+    Load the training images, silhouettes and cameras for the active dataset.
+    lego has its own train split. poster has one transforms.json, so we hold
+    out every TEST_EVERY-th image ourselves (load_nerf_data stays untouched).
+    """
+    images, silhouettes, cameras = load_nerf_data(
+        str(DATA_DIR),
+        split="train",
+        device=device,
+        znear=CAMERA_ZNEAR,
+        zfar=CAMERA_ZFAR,
+        resize_to=RESIZE_TO,
+    )
+    # Bicubic resizing can overshoot slightly outside [0, 1].
+    images = images.clamp(0.0, 1.0)
+    silhouettes = silhouettes.clamp(0.0, 1.0)
+
+    if TEST_EVERY:
+        all_idx = torch.arange(len(images))
+        train_idx = all_idx[all_idx % TEST_EVERY != 0]
+        images = images[train_idx]
+        silhouettes = silhouettes[train_idx]
+        cameras = select_cameras(cameras, train_idx.to(device))
+        print(f"Held out every {TEST_EVERY}th image: {len(train_idx)} train images left.")
+
+    height, width = images.shape[1:3]
+    cameras = fix_fov_for_aspect(cameras, height, width)
+    return images, silhouettes, cameras
+
+
+def save_preview(model, camera, target_image, renderer_grid, hist_color, hist_sil, iteration, path):
+    """
+    Render one full training view and save it next to its target and the loss
+    curves. Always the same view, so previews over training are comparable.
+    """
+    with torch.no_grad():
+        rendered, _ = renderer_grid(
+            cameras=camera, volumetric_function=model.batched_forward
+        )
+    rendered_image = rendered[0, ..., :3].clamp(0.0, 1.0)
+    target_image = target_image.clamp(0.0, 1.0)
+    psnr = -10 * torch.log10(((rendered_image - target_image) ** 2).mean())
 
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-    ax[0].imshow(rendered.cpu().numpy())
+    ax[0].imshow(rendered_image.cpu().numpy())
     ax[0].set_title(f"Render (iter {iteration}, PSNR {psnr:.2f} dB)")
-    ax[1].imshow(target.cpu().numpy())
+    ax[1].imshow(target_image.cpu().numpy())
     ax[1].set_title("Ground truth")
     ax[2].plot(hist_color, label="colour")
     if hist_sil:
@@ -163,113 +197,145 @@ def save_intermediate(path, rendered, target, hist_color, hist_sil, iteration):
     plt.close(fig)
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", choices=list(DATASETS.keys()), default="lego")
-    parser.add_argument("--n_iter", type=int, default=3000)
-    parser.add_argument("--batch_size", type=int, default=2)   # 6 in the book, reduced for a 4 GB GPU
-    parser.add_argument("--n_rays", type=int, default=750)     # rays per image per iteration
-    parser.add_argument("--n_pts", type=int, default=128)      # samples per ray
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--vis_every", type=int, default=100)
-    args = parser.parse_args()
-
-    cfg = DATASETS[args.dataset]
-    out_dir = ROOT / "outputs" / args.dataset
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    # 2. Device
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(1)
-    print(f"Device: {device}")
-
-    # 3. Data
-    imgs, sils, cams = load_split(cfg, "train", device)
-    n_views, height, width = imgs.shape[:3]
-    print(f"Training on {n_views} views of size {height}x{width}")
-
-    # NDC extent: [-1, 1] on the shorter side, [-s, s] on the longer side
-    sx = max(width / height, 1.0)
-    sy = max(height / width, 1.0)
-
-    # 4. Raysamplers and renderers
-    raysampler_mc = MonteCarloRaysampler(
-        min_x=-sx, max_x=sx,
-        min_y=-sy, max_y=sy,
-        n_rays_per_image=args.n_rays,
-        n_pts_per_ray=args.n_pts,
-        min_depth=cfg["min_depth"],
-        max_depth=cfg["max_depth"],
+def save_checkpoint(model, iteration, loss_history, path):
+    torch.save(
+        {
+            "iteration": iteration,
+            "dataset": ACTIVE_DATASET,
+            "model_state_dict": model.state_dict(),
+            "loss_history": loss_history,
+        },
+        path,
     )
+
+
+def save_loss_history_csv(color, silhouette, total, path):
+    """
+    One row per iteration. Opens directly in Excel.
+    The silhouette column is empty when the silhouette loss is not used (poster).
+    """
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["iteration", "color_loss", "silhouette_loss", "total_loss"])
+        for i, (c, t) in enumerate(zip(color, total)):
+            s = silhouette[i] if i < len(silhouette) else ""
+            writer.writerow([i, c, s, t])
+
+
+# ------------------------------------------------------------
+# Training
+# ------------------------------------------------------------
+def main():
+    device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    torch.manual_seed(RANDOM_SEED)
+
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    preview_dir = OUTPUT_DIR / "previews"
+    preview_dir.mkdir(exist_ok=True)
+    # Record the exact settings this run used (read-only copy, not a second config).
+    shutil.copy(CONFIG_PATH, OUTPUT_DIR / "config_used.yaml")
+
+    # Data
+    print(f"Dataset: {ACTIVE_DATASET}  ({DATA_DIR})")
+    target_images, target_silhouettes, target_cameras = load_train_split(device)
+    n_images, height, width, _ = target_images.shape
+    x_extent, y_extent = ndc_extent_for(height, width)
+    print(f"{n_images} training images at {width}x{height}")
+
+    # Renderers
+    raymarcher = EmissionAbsorptionRaymarcher()
+
+    # Monte Carlo sampler: random rays for each training step.
+    raysampler_mc = MonteCarloRaysampler(
+        min_x=-x_extent,
+        max_x=x_extent,
+        min_y=-y_extent,
+        max_y=y_extent,
+        n_rays_per_image=N_RAYS_PER_IMAGE,
+        n_pts_per_ray=N_PTS_PER_RAY,
+        min_depth=RAY_MIN_DEPTH,
+        max_depth=RAY_MAX_DEPTH,
+    )
+    renderer_mc = ImplicitRenderer(raysampler=raysampler_mc, raymarcher=raymarcher).to(device)
+
+    # Grid sampler: one ray per pixel, for full-image previews.
     raysampler_grid = NDCMultinomialRaysampler(
         image_height=height,
         image_width=width,
-        n_pts_per_ray=args.n_pts,
-        min_depth=cfg["min_depth"],
-        max_depth=cfg["max_depth"],
+        n_pts_per_ray=N_PTS_PER_RAY,
+        min_depth=RAY_MIN_DEPTH,
+        max_depth=RAY_MAX_DEPTH,
     )
-    raymarcher = EmissionAbsorptionRaymarcher()
-    renderer_mc = ImplicitRenderer(raysampler=raysampler_mc, raymarcher=raymarcher).to(device)
     renderer_grid = ImplicitRenderer(raysampler=raysampler_grid, raymarcher=raymarcher).to(device)
 
-    # 5. Model and optimizer
+    # Model and optimizer
     model = NeuralRadianceField().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    lr_decay_iteration = round(N_ITERATIONS * LR_DECAY_AT)
 
-    # 6. Training loop
-    hist_color, hist_sil = [], []
-    vis_idx = 0  # fixed view for the intermediate renders, so they are comparable
+    loss_history_color, loss_history_sil, loss_history_total = [], [], []
 
-    for iteration in tqdm(range(args.n_iter)):
-        if iteration == round(args.n_iter * 0.75):
-            # As in the baseline: re-creating the optimizer also resets Adam's state
-            tqdm.write("Decreasing LR 10-fold ...")
-            optimizer = torch.optim.Adam(model.parameters(), lr=args.lr * 0.1)
+    for iteration in tqdm(range(N_ITERATIONS), desc="Training"):
+        if iteration == lr_decay_iteration:
+            # Same as the baseline: a fresh optimizer with a lower LR.
+            tqdm.write(f"Decreasing LR by factor {LR_DECAY_FACTOR} ...")
+            optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE * LR_DECAY_FACTOR)
 
         optimizer.zero_grad()
-        batch_idx = torch.randperm(n_views)[: args.batch_size]
-        batch_cams = cams[batch_idx.tolist()]
+        batch_idx = torch.randperm(n_images)[:BATCH_SIZE]
+        batch_cameras = select_cameras(target_cameras, batch_idx)
 
-        rendered, sampled_rays = renderer_mc(cameras=batch_cams, volumetric_function=model)
-        rendered_rgb, rendered_alpha = rendered.split([3, 1], dim=-1)
+        rendered, sampled_rays = renderer_mc(
+            cameras=batch_cameras, volumetric_function=model
+        )
+        rendered_images, rendered_silhouettes = rendered.split([3, 1], dim=-1)
 
         colors_at_rays = sample_images_at_mc_locs(
-            imgs[batch_idx], sampled_rays.xys, (sx, sy)
+            target_images[batch_idx], sampled_rays.xys, (x_extent, y_extent)
         )
-        color_err = huber(rendered_rgb, colors_at_rays).abs().mean()
+        color_err = huber(rendered_images, colors_at_rays).abs().mean()
         loss = color_err
-        hist_color.append(float(color_err))
 
-        if cfg["use_silhouette"]:
-            sils_at_rays = sample_images_at_mc_locs(
-                sils[batch_idx, ..., None], sampled_rays.xys, (sx, sy)
+        if USE_SILHOUETTE_LOSS:
+            silhouettes_at_rays = sample_images_at_mc_locs(
+                target_silhouettes[batch_idx, ..., None], sampled_rays.xys, (x_extent, y_extent)
             )
-            sil_err = huber(rendered_alpha, sils_at_rays).abs().mean()
+            sil_err = huber(rendered_silhouettes, silhouettes_at_rays).abs().mean()
             loss = loss + sil_err
-            hist_sil.append(float(sil_err))
+            loss_history_sil.append(float(sil_err))
+
+        loss_history_color.append(float(color_err))
+        loss_history_total.append(float(loss))
 
         loss.backward()
         optimizer.step()
 
-        if iteration % args.vis_every == 0 or iteration == args.n_iter - 1:
-            rgb, _ = render_full(model, renderer_grid, cams[[vis_idx]])
-            save_intermediate(
-                out_dir / f"intermediate_{iteration:05d}.png",
-                rgb, imgs[vis_idx], hist_color, hist_sil, iteration,
+        if iteration % VISUALIZE_EVERY == 0 or iteration == N_ITERATIONS - 1:
+            save_preview(
+                model,
+                select_cameras(target_cameras, [PREVIEW_VIEW]),
+                target_images[PREVIEW_VIEW],
+                renderer_grid,
+                loss_history_color,
+                loss_history_sil,
+                iteration,
+                preview_dir / f"iter_{iteration:05d}.png",
             )
 
-    # 7. Save
-    torch.save(model.state_dict(), out_dir / "model.pth")
-    config = {**vars(args), **{k: (str(v) if isinstance(v, Path) else v) for k, v in cfg.items()}}
-    with open(out_dir / "config.json", "w") as f:
-        json.dump(config, f, indent=2)
-    with open(out_dir / "losses.json", "w") as f:
-        json.dump({"color": hist_color, "silhouette": hist_sil}, f)
+        if iteration > 0 and iteration % CHECKPOINT_EVERY == 0:
+            save_checkpoint(model, iteration, loss_history_total, OUTPUT_DIR / "checkpoint.pt")
 
-    print(f"Done. Model and renders saved to {out_dir}")
+    # Final checkpoint and loss history (for the report)
+    save_checkpoint(model, N_ITERATIONS, loss_history_total, OUTPUT_DIR / "checkpoint.pt")
+    save_loss_history_csv(
+        loss_history_color,
+        loss_history_sil,
+        loss_history_total,
+        OUTPUT_DIR / "loss_history.csv",
+    )
+    print(f"Done. Outputs in {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":

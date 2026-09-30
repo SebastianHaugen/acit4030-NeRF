@@ -22,7 +22,7 @@ model:
 render:
   n_rays_per_image: 750        # random rays per image per training step
   n_pts_per_ray: 128           # sample points along each ray
-  n_batches_full_render: 16    # chunks for full-image renders (more = less memory)
+  n_batches_full_render: 32    # chunks for full-image renders (more = less memory)
 
 train:
   n_iter: 3000
@@ -34,6 +34,12 @@ train:
   seed: 1
   vis_every: 100               # save a preview image every N iterations
   checkpoint_every: 500        # save a checkpoint every N iterations
+
+evaluation:
+  max_test_views: null         # null = all test views; a number = evenly spaced subset (faster)
+  lpips_net: alex              # backbone for LPIPS: alex | vgg | squeeze
+  figures_dir: report/figures  # where report figures and tables are saved
+  loss_smoothing_window: 50    # moving average (iterations) for the loss-curve figure
 
 
 # ------------------------------------------------------------
@@ -48,18 +54,20 @@ datasets:
     resize_to: [200, 200]
     znear: 0.01                # camera clipping planes (passed to load_nerf_data)
     zfar: 10.0
-    min_depth: 2.0             # ray sampling range (starting point, verify)
+    min_depth: 2.0             # ray sampling range; cameras are ~4.03 units from the object
     max_depth: 6.0
     use_silhouette_loss: true  # lego has an alpha channel
     test_every: null           # lego ships its own test split
+    n_figure_views: 4          # test views shown in the qualitative figure
 
   poster:
     data_dir: data/poster
     output_dir: outputs/poster
-    resize_to: [480, 270]      # 1920x1080 / 4, keeps the aspect ratio
+    resize_to: [320, 180]      # portrait, keeps the original 16:9 aspect ratio
     znear: 0.01
     zfar: 10.0
-    min_depth: 0.1             # placeholder - tune after the first run
-    max_depth: 6.0             # placeholder - tune after the first run
+    min_depth: 0.2             # TODO: tune from sparse_pc.ply (see data_check notebook)
+    max_depth: 10.0
     use_silhouette_loss: false # no alpha channel, silhouette is all ones
     test_every: 8              # hold out every 8th image as test
+    n_figure_views: 3          # portrait images, so fewer columns
