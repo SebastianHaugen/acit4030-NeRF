@@ -7,7 +7,8 @@
 preview:
   the-preview: "Working successfully"
 
-# Which dataset train.py uses: lego | poster
+# Default dataset for train.py / evaluate.py / smoke_test.py: lego | poster
+# Override per run without editing this file:  NERF_DATASET=poster python -m src.train
 active_dataset: lego
 
 
@@ -25,21 +26,26 @@ render:
   n_batches_full_render: 32    # chunks for full-image renders (more = less memory)
 
 train:
-  n_iter: 3000
   batch_size: 2                # images per step (baseline book value: 6)
-  learning_rate: 1.0e-3
+  learning_rate: 1.0e-4        # 1e-3 (book value) got stuck predicting empty space
   lr_decay_at: 0.75            # fraction of n_iter where the LR drops
   lr_decay_factor: 0.1         # LR multiplier at that point
   huber_scaling: 0.1           # scaling of the Huber loss
   seed: 1
-  vis_every: 100               # save a preview image every N iterations
-  checkpoint_every: 500        # save a checkpoint every N iterations
+  vis_every: 1000              # save a preview image every N iterations
+  checkpoint_every: 2000       # save a checkpoint every N iterations
 
 evaluation:
   max_test_views: null         # null = all test views; a number = evenly spaced subset (faster)
   lpips_net: alex              # backbone for LPIPS: alex | vgg | squeeze
   figures_dir: report/figures  # where report figures and tables are saved
-  loss_smoothing_window: 50    # moving average (iterations) for the loss-curve figure
+  loss_smoothing_window: 200   # moving average (iterations) for the loss-curve figure
+
+smoke_test:                    # short check run: python -m src.smoke_test
+  n_iter: 500
+  vis_every: 100
+  output_dir: outputs/smoke_test   # separate from the real results
+  min_loss_drop: 0.2           # pass if the loss drops by at least 20 %
 
 
 # ------------------------------------------------------------
@@ -51,6 +57,7 @@ datasets:
   lego:
     data_dir: data/lego
     output_dir: outputs/lego
+    n_iter: 10000              # loss stops improving around 10k iterations
     resize_to: [200, 200]
     znear: 0.01                # camera clipping planes (passed to load_nerf_data)
     zfar: 10.0
@@ -63,6 +70,7 @@ datasets:
   poster:
     data_dir: data/poster
     output_dir: outputs/poster
+    n_iter: 60000              # real scene, needs longer training
     resize_to: [320, 180]      # portrait, keeps the original 16:9 aspect ratio
     znear: 0.01
     zfar: 10.0

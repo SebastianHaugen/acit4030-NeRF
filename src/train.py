@@ -2,10 +2,11 @@
 Train the baseline NeRF on the active dataset (lego or poster).
 
 Adapted from baseline/train_nerf.py (course book, Chapter 6). All settings
-come from config.yaml via repo_util/LoadConfigurations.py. Pick the dataset
-with `active_dataset` in config.yaml, then run from the project root:
+come from config.yaml via repo_util/LoadConfigurations.py; the file is only read,
+never changed. Run from the project root:
 
-    python -m src.train
+    python -m src.train                          # dataset = active_dataset in config.yaml
+    NERF_DATASET=poster python -m src.train      # choose the dataset for this run
 """
 import csv
 import shutil
@@ -225,24 +226,37 @@ def save_loss_history_csv(color, silhouette, total, path):
 # ------------------------------------------------------------
 # Training
 # ------------------------------------------------------------
-def main():
+def main(
+    n_iter=N_ITERATIONS,
+    output_dir=OUTPUT_DIR,
+    vis_every=VISUALIZE_EVERY,
+    checkpoint_every=CHECKPOINT_EVERY,
+):
+    """
+    Train on the active dataset. The arguments default to config.yaml and are
+    only overridden by smoke_test.py (short run in a separate folder).
+    Returns the loss histories.
+    """
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     if device.type == "cuda":
         torch.cuda.set_device(device)
     torch.manual_seed(RANDOM_SEED)
 
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    preview_dir = OUTPUT_DIR / "previews"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    preview_dir = output_dir / "previews"
     preview_dir.mkdir(exist_ok=True)
     # Record the exact settings this run used (read-only copy, not a second config).
-    shutil.copy(CONFIG_PATH, OUTPUT_DIR / "config_used.yaml")
+    config_copy = output_dir / "config_used.yaml"
+    shutil.copy(CONFIG_PATH, config_copy)
+    with open(config_copy, "a", encoding="utf-8") as f:
+        f.write(f"\n# This run: dataset = {ACTIVE_DATASET}, n_iter = {n_iter}\n")
 
     # Data
     print(f"Dataset: {ACTIVE_DATASET}  ({DATA_DIR})")
     target_images, target_silhouettes, target_cameras = load_train_split(device)
     n_images, height, width, _ = target_images.shape
     x_extent, y_extent = ndc_extent_for(height, width)
-    print(f"{n_images} training images at {width}x{height}")
+    print(f"{n_images} training images at {width}x{height}, {n_iter} iterations")
 
     # Renderers
     raymarcher = EmissionAbsorptionRaymarcher()
@@ -273,11 +287,11 @@ def main():
     # Model and optimizer
     model = NeuralRadianceField().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
-    lr_decay_iteration = round(N_ITERATIONS * LR_DECAY_AT)
+    lr_decay_iteration = round(n_iter * LR_DECAY_AT)
 
     loss_history_color, loss_history_sil, loss_history_total = [], [], []
 
-    for iteration in tqdm(range(N_ITERATIONS), desc="Training"):
+    for iteration in tqdm(range(n_iter), desc="Training"):
         if iteration == lr_decay_iteration:
             # Same as the baseline: a fresh optimizer with a lower LR.
             tqdm.write(f"Decreasing LR by factor {LR_DECAY_FACTOR} ...")
@@ -304,15 +318,15 @@ def main():
             )
             sil_err = huber(rendered_silhouettes, silhouettes_at_rays).abs().mean()
             loss = loss + sil_err
-            loss_history_sil.append(float(sil_err))
+            loss_history_sil.append(sil_err.item())
 
-        loss_history_color.append(float(color_err))
-        loss_history_total.append(float(loss))
+        loss_history_color.append(color_err.item())
+        loss_history_total.append(loss.item())
 
         loss.backward()
         optimizer.step()
 
-        if iteration % VISUALIZE_EVERY == 0 or iteration == N_ITERATIONS - 1:
+        if iteration % vis_every == 0 or iteration == n_iter - 1:
             save_preview(
                 model,
                 select_cameras(target_cameras, [PREVIEW_VIEW]),
@@ -324,18 +338,19 @@ def main():
                 preview_dir / f"iter_{iteration:05d}.png",
             )
 
-        if iteration > 0 and iteration % CHECKPOINT_EVERY == 0:
-            save_checkpoint(model, iteration, loss_history_total, OUTPUT_DIR / "checkpoint.pt")
+        if iteration > 0 and iteration % checkpoint_every == 0:
+            save_checkpoint(model, iteration, loss_history_total, output_dir / "checkpoint.pt")
 
     # Final checkpoint and loss history (for the report)
-    save_checkpoint(model, N_ITERATIONS, loss_history_total, OUTPUT_DIR / "checkpoint.pt")
+    save_checkpoint(model, n_iter, loss_history_total, output_dir / "checkpoint.pt")
     save_loss_history_csv(
         loss_history_color,
         loss_history_sil,
         loss_history_total,
-        OUTPUT_DIR / "loss_history.csv",
+        output_dir / "loss_history.csv",
     )
-    print(f"Done. Outputs in {OUTPUT_DIR}")
+    print(f"Done. Outputs in {output_dir}")
+    return {"color": loss_history_color, "silhouette": loss_history_sil, "total": loss_history_total}
 
 
 if __name__ == "__main__":

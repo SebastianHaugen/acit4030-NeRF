@@ -1,0 +1,162 @@
+"""
+Build the report figures and tables that combine both datasets.
+
+Reads the training/evaluation outputs of every dataset that has them and writes:
+    report/figures/loss_curves.pdf      Fig. 5: colour loss over training
+    report/figures/table_metrics.tex    Table 3: PSNR / SSIM / LPIPS as a LaTeX table
+
+Run from the project root after train.py and evaluate.py (for one or both datasets):
+
+    python -m src.report_figures
+"""
+import csv
+
+import matplotlib.pyplot as plt
+import yaml
+
+from src.repo_util.LoadConfigurations import (
+    DATASET_NAMES,
+    DATASET_OUTPUT_DIRS,
+    FIGURES_DIR,
+    LOSS_SMOOTHING_WINDOW,
+)
+
+IEEE_COLUMN_WIDTH_IN = 3.5  # one column of an IEEE two-column paper
+
+# Fixed colour per dataset (colour follows the dataset, not the plotting order).
+DATASET_COLORS = {"lego": "#2a78d6", "poster": "#eb6834"}
+TEXT_COLOR = "#333333"
+GRID_COLOR = "#e0e0e0"
+
+
+def moving_average(values, window):
+    """Trailing moving average; the first points average over what is available."""
+    out, total = [], 0.0
+    for i, v in enumerate(values):
+        total += v
+        if i >= window:
+            total -= values[i - window]
+        out.append(total / min(i + 1, window))
+    return out
+
+
+def read_color_loss(dataset):
+    """
+    Colour loss per iteration from loss_history.csv. The colour loss is used
+    rather than the total loss because lego's total also includes the
+    silhouette loss, so totals are not comparable between datasets.
+    """
+    path = DATASET_OUTPUT_DIRS[dataset] / "loss_history.csv"
+    if not path.exists():
+        return None
+    with open(path, newline="", encoding="utf-8") as f:
+        return [float(row["color_loss"]) for row in csv.DictReader(f)]
+
+
+def lr_decay_iteration(dataset):
+    """Where the LR dropped in that run, read from the config the run actually used."""
+    path = DATASET_OUTPUT_DIRS[dataset] / "config_used.yaml"
+    if not path.exists():
+        return None
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    n_iter = cfg["datasets"][dataset]["n_iter"]
+    return round(n_iter * cfg["train"]["lr_decay_at"])
+
+
+def plot_loss_curves():
+    curves = {d: read_color_loss(d) for d in DATASET_NAMES}
+    curves = {d: c for d, c in curves.items() if c}
+    if not curves:
+        print("No loss_history.csv found - train first. Skipping loss curves.")
+        return
+
+    plt.rcParams.update({"font.size": 8, "font.family": "sans-serif"})
+    fig, ax = plt.subplots(figsize=(IEEE_COLUMN_WIDTH_IN, 2.3))
+
+    for dataset, losses in curves.items():
+        smoothed = moving_average(losses, LOSS_SMOOTHING_WINDOW)
+        color = DATASET_COLORS.get(dataset, TEXT_COLOR)
+        ax.plot(range(len(smoothed)), smoothed, color=color, linewidth=1.2, label=dataset)
+        # Direct label at the end of each line, in text colour (identity comes from the line).
+        ax.annotate(dataset, (len(smoothed) - 1, smoothed[-1]), xytext=(4, 0),
+                    textcoords="offset points", va="center", fontsize=7, color=TEXT_COLOR)
+
+    decay_points = {lr_decay_iteration(d) for d in curves} - {None}
+    for it in decay_points:
+        ax.axvline(it, color="#888888", linewidth=0.8, linestyle="--")
+        ax.annotate("LR ÷10", (it, 1.0), xycoords=("data", "axes fraction"), xytext=(-3, -8),
+                    textcoords="offset points", ha="right", fontsize=7, color=TEXT_COLOR)
+
+    ax.set_yscale("log")
+    ax.set_xlabel("Iteration")
+    ax.set_ylabel(f"Colour loss ({LOSS_SMOOTHING_WINDOW}-it. average)")
+    ax.grid(True, which="major", color=GRID_COLOR, linewidth=0.6)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    for side in ("left", "bottom"):
+        ax.spines[side].set_color("#999999")
+    ax.tick_params(colors=TEXT_COLOR, labelsize=7)
+    if len(curves) > 1:
+        ax.legend(frameon=False, fontsize=7, loc="lower left")
+
+    path = FIGURES_DIR / "loss_curves.pdf"
+    fig.savefig(path, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {path}")
+
+
+def read_metrics(dataset):
+    path = DATASET_OUTPUT_DIRS[dataset] / "metrics.csv"
+    if not path.exists():
+        return None
+    with open(path, newline="", encoding="utf-8") as f:
+        return next(csv.DictReader(f))
+
+
+def write_metrics_table():
+    results = {d: read_metrics(d) for d in DATASET_NAMES}
+    results = {d: r for d, r in results.items() if r}
+    if not results:
+        print("No metrics.csv found - run evaluate first. Skipping the metrics table.")
+        return
+
+    def cell(r, key, digits):
+        return f"${float(r[key + '_mean']):.{digits}f} \\pm {float(r[key + '_std']):.{digits}f}$"
+
+    body = "\n".join(
+        f"{d.capitalize()} & {r['n_views']} & {cell(r, 'psnr', 2)} & "
+        f"{cell(r, 'ssim', 3)} & {cell(r, 'lpips', 3)} \\\\"
+        for d, r in results.items()
+    )
+    table = rf"""% Generated by src/report_figures.py - do not edit by hand, rerun the script.
+% Needs \usepackage{{booktabs}} in the preamble. Include with \input{{figures/table_metrics.tex}}
+\begin{{table}}[t]
+\centering
+\caption{{Quantitative results on the held-out test views (mean $\pm$ standard deviation).}}
+\label{{tab:metrics}}
+\begin{{tabular}}{{lcccc}}
+\toprule
+Dataset & Views & PSNR $\uparrow$ (dB) & SSIM $\uparrow$ & LPIPS $\downarrow$ \\
+\midrule
+{body}
+% Optional reference row, values from the original NeRF paper:
+% Lego (original NeRF) & -- & ... & ... & ... \\
+\bottomrule
+\end{{tabular}}
+\end{{table}}
+"""
+    path = FIGURES_DIR / "table_metrics.tex"
+    path.write_text(table, encoding="utf-8")
+    print(f"Saved {path}")
+
+
+def main():
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    plot_loss_curves()
+    write_metrics_table()
+
+
+if __name__ == "__main__":
+    main()
