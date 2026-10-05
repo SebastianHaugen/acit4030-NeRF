@@ -154,15 +154,6 @@ Each dataset gets its own folder in `outputs/` with
 
 `report/figures/` gets `qualitative_lego.png`, `qualitative_poster.png`, `loss_curves.pdf` and `table_metrics.tex`.
 
-## Results
-
-Mean and standard deviation over the held-out test views.
-
-| Dataset | Test views | PSNR (dB) ↑ | SSIM ↑ | LPIPS ↓ |
-|---|---|---|---|---|
-| Lego | 20 | 20.41 ± 0.87 | 0.799 ± 0.015 | 0.259 ± 0.032 |
-| Poster | 29 | 21.67 ± 1.09 | 0.656 ± 0.038 | 0.560 ± 0.053 |
-
 ## Running the original baseline
 
 The code in `baseline/` comes from the Chapter 6 folder of the course book repository, *3D Deep Learning with Python* by Packt.
