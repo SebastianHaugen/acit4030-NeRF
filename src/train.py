@@ -184,7 +184,7 @@ def save_checkpoint(model, iteration, loss_history, path):
 
 
 def save_loss_history_csv(color, silhouette, total, path):
-    """Saves the losses with one row per iteration, the file opens directly in Excel."""
+    """Saves the losses with one row per iteration"""
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(["iteration", "color_loss", "silhouette_loss", "total_loss"])
