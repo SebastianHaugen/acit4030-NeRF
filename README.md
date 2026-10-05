@@ -50,8 +50,10 @@ acit4030-nerf/
 │   └── poster/
 │
 └── report/
-    └── figures/                 # figures and tables used in the report
+    └── figures/                 # written by evaluate.py and report_figures.py
 ```
+
+The figures in `report/figures/` are not committed. They are created on the Colab machine during training, and we never commit or push from Colab. Instead, cell 17 of the Colab notebook copies them to Google Drive, where the group gets them for the report.
 
 ## Data
 
