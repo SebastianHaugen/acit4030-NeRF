@@ -227,5 +227,7 @@ data/*
 outputs/*
 #But keep this file so Git can track the 'output' folder
 !outputs/.gitkeep
-
+#A baseline content
 baseline/intermediate_*.png
+#Ignoring 'baseline/data' since its download automatically on first run
+baseline/data/
