@@ -3,6 +3,12 @@
 Simplified NeRF baseline in PyTorch3D, trained and evaluated on the synthetic **lego** scene and the real **poster** scene.
 Group project for ACIT4030 Machine Learning for 3D Computer Vision at OsloMet.
 
+## Group 6
+
+- Mats Aakvik Johansen
+- Sebastian Skrøvseth Haugen
+- Jesse Kyomuhendo Tibamwenda
+
 ## Project structure
 
 ```
@@ -18,7 +24,7 @@ acit4030-nerf/
 │   ├── nerf_model.py
 │   ├── README.md
 │   ├── utils/
-│   └── data/cow_mesh/           # downloaded automatically on the first run
+│   └── data/cow_mesh/           # not tracked, downloaded automatically on the first run
 │
 ├── data/                        # not tracked, extract acit4030-data.zip here
 │   ├── lego/
@@ -170,8 +176,7 @@ The cow mesh is downloaded automatically on the first run. Two changes were made
 - The download used `wget`, which does not exist on Windows, so it was replaced with Python's `urllib`. The `'wget' is not recognized` messages can be ignored.
 - `batch_size` was reduced from 6 to 2 to fit a 4 GB GPU (RTX 3050 Ti).
 
-## Group
+## References
 
-- Mats Aakvik Johansen
-- Sebastian Skrøvseth Haugen
-- Jesse Kyomuhendo Tibamwenda
+- Chapter 6 code from the course book repository, *3D Deep Learning with Python* by Packt
+  https://github.com/PacktPublishing/3D-Deep-Learning-with-Python/tree/main/chap6
