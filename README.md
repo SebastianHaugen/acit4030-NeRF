@@ -106,7 +106,7 @@ In Windows PowerShell, set the variable with `$env:NERF_DATASET="poster"` before
 
 ### Google Drive folders
 
-Only the dataset zip has to be uploaded by hand. The notebook creates every other folder itself. As an example, this is how the folders look in Jesse's Drive after a full run.
+Only the dataset zip has to be uploaded by hand. The notebook creates every other folder itself. As an example, this is how the folders look in our Drive after a full run.
 
 ```
 MyDrive/
