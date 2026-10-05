@@ -1,15 +1,6 @@
 """
-Evaluate a trained NeRF on the held-out test views of the active dataset.
-
-Loads outputs/<dataset>/checkpoint.pt, renders every test view, and writes:
-    outputs/<dataset>/metrics_per_view.csv      PSNR, SSIM, LPIPS per test view
-    outputs/<dataset>/metrics.csv               mean and std over the test views (Table 3)
-    outputs/<dataset>/test_renders/*.png        every rendered test view
-    report/figures/qualitative_<dataset>.png    ground truth / render / error figure
-
-Run from the project root after training:
-
-    python -m src.evaluate
+Evaluates a trained NeRF on the held-out test views of the active dataset.
+Run from the project root after training with python -m src.evaluate
 """
 import csv
 import statistics
@@ -43,16 +34,13 @@ from src.repo_util.LoadConfigurations import (
     N_FIGURE_VIEWS,
 )
 
-IEEE_TEXT_WIDTH_IN = 7.16    # full page width of an IEEE two-column paper
-MAX_FIGURE_HEIGHT_IN = 5.0   # keep figures well under the page height
+IEEE_TEXT_WIDTH_IN = 7.16    # full page width of an IEEE two-column paper in inches
+MAX_FIGURE_HEIGHT_IN = 5.0   # keeps the figures well below the page height
 
 
 def load_test_split(device):
-    """
-    Load the test images and cameras for the active dataset.
-    lego: its own test split. poster: every TEST_EVERY-th image, which is
-    exactly the set train.py held out.
-    """
+    """Loads the test images and cameras of the active dataset."""
+    # Poster has no test split, so it uses the same images that train.py held out (every 8th by default)
     if TEST_EVERY:
         images, _, cameras = load_nerf_data(
             str(DATA_DIR), split="train", device=device,
@@ -60,6 +48,7 @@ def load_test_split(device):
         )
         all_idx = torch.arange(len(images))
         test_idx = all_idx[all_idx % TEST_EVERY == 0]
+    # Lego comes with its own test split
     else:
         images, _, cameras = load_nerf_data(
             str(DATA_DIR), split="test", device=device,
@@ -68,22 +57,24 @@ def load_test_split(device):
         test_idx = torch.arange(len(images))
 
     if MAX_TEST_VIEWS and len(test_idx) > MAX_TEST_VIEWS:
-        # Evenly spaced subset, to save time on large test splits.
+        # Evenly spaced subset to save time on large test splits
         pick = torch.linspace(0, len(test_idx) - 1, MAX_TEST_VIEWS).round().long().unique()
         test_idx = test_idx[pick]
 
     images = images[test_idx].clamp(0.0, 1.0)
     cameras = select_cameras(cameras, test_idx.to(device))
-    # Same FoV correction as in training, otherwise portrait views would not line up.
+    # Same field of view correction as in training, otherwise portrait views would not line up
     cameras = fix_fov_for_aspect(cameras, *images.shape[1:3])
     return images, cameras, test_idx.tolist()
 
 
 def load_model(device):
+    """Loads the trained model from the checkpoint of the active dataset."""
     checkpoint_path = OUTPUT_DIR / "checkpoint.pt"
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"No checkpoint at {checkpoint_path}. Train first: python -m src.train")
     checkpoint = torch.load(checkpoint_path, map_location=device)
+    # Stops a lego model from being evaluated on poster by mistake, and the other way round
     if checkpoint.get("dataset") != ACTIVE_DATASET:
         raise ValueError(
             f"Checkpoint was trained on '{checkpoint.get('dataset')}', "
@@ -97,6 +88,7 @@ def load_model(device):
 
 
 def write_per_view_csv(rows, path):
+    """Saves PSNR, SSIM and LPIPS for every test view."""
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=["view_index", "psnr", "ssim", "lpips"])
         writer.writeheader()
@@ -104,11 +96,12 @@ def write_per_view_csv(rows, path):
 
 
 def write_summary_csv(rows, path):
-    """Mean and standard deviation over all test views, one row for this dataset."""
+    """Saves the mean and standard deviation over all test views in one row."""
     summary = {"dataset": ACTIVE_DATASET, "n_views": len(rows)}
     for key in ("psnr", "ssim", "lpips"):
         values = [r[key] for r in rows]
         summary[f"{key}_mean"] = statistics.mean(values)
+        # The standard deviation needs at least two views
         summary[f"{key}_std"] = statistics.stdev(values) if len(values) > 1 else 0.0
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(summary.keys()))
@@ -118,38 +111,34 @@ def write_summary_csv(rows, path):
 
 
 def pick_figure_views(rows, n):
-    """
-    Pick n views spread over the PSNR ranking, always including the best and
-    the worst view, so the figure shows the range of quality honestly.
-    Returns positions into `rows`, ordered from best to worst.
-    """
+    """Picks n views spread over the PSNR ranking, always including the best and the worst."""
+    # Positions in rows sorted from highest to lowest PSNR
     order = sorted(range(len(rows)), key=lambda i: rows[i]["psnr"], reverse=True)
     n = min(n, len(order))
     if n == 1:
         return [order[0]]
+    # Evenly spaced ranks from the best to the worst view
     ranks = [round(k * (len(order) - 1) / (n - 1)) for k in range(n)]
     return [order[r] for r in ranks]
 
 
 def save_qualitative_figure(targets, renders, rows, positions, path):
-    """
-    Rows: ground truth, render, absolute error. One column per selected view.
-    The figure is at most the IEEE page width and MAX_FIGURE_HEIGHT_IN tall;
-    portrait images (poster) therefore come out narrow enough for one column.
-    """
+    """Saves a figure with ground truth, render and absolute error for the selected views."""
     height, width = targets[0].shape[:2]
     n_cols = len(positions)
-    extra_w, extra_h = 0.9, 0.5  # room for row labels / colour bar, and column labels
+    extra_w, extra_h = 0.9, 0.5  # room for the row labels, colour bar and column labels
 
+    # Fits the figure to the page width, but shrinks it if it gets too tall
     col_width = (IEEE_TEXT_WIDTH_IN - extra_w) / n_cols
     if 3 * col_width * height / width + extra_h > MAX_FIGURE_HEIGHT_IN:
         col_width = (MAX_FIGURE_HEIGHT_IN - extra_h) / 3 * width / height
     fig_size = (n_cols * col_width + extra_w, 3 * col_width * height / width + extra_h)
 
+    # Error per pixel averaged over the RGB channels
     errors = [(renders[p] - targets[p]).abs().mean(dim=-1) for p in positions]
-    vmax = max(float(e.max()) for e in errors)  # one shared scale, so columns are comparable
+    vmax = max(float(e.max()) for e in errors)  # one shared scale, so the columns are comparable
 
-    # Extra narrow column for the colour bar, so every image column has the same width.
+    # Extra narrow column for the colour bar, so every image column has the same width
     fig, axes = plt.subplots(
         3, n_cols + 1, figsize=fig_size, squeeze=False,
         gridspec_kw={"wspace": 0.04, "hspace": 0.04, "width_ratios": [1] * n_cols + [0.06]},
@@ -163,12 +152,14 @@ def save_qualitative_figure(targets, renders, rows, positions, path):
         )
     for row, label in enumerate(("Ground truth", "Render", "|Error|")):
         axes[row, 0].set_ylabel(label, fontsize=8)
+    # Hides ticks and borders around the images
     for ax in axes[:, :n_cols].ravel():
         ax.set_xticks([])
         ax.set_yticks([])
         for spine in ax.spines.values():
             spine.set_visible(False)
 
+    # Only the bottom cell of the last column holds the colour bar
     axes[0, n_cols].axis("off")
     axes[1, n_cols].axis("off")
     cbar = fig.colorbar(im, cax=axes[2, n_cols])
@@ -179,6 +170,7 @@ def save_qualitative_figure(targets, renders, rows, positions, path):
 
 @torch.no_grad()
 def main():
+    """Renders every test view, computes the metrics and saves the results and the figure."""
     device = torch.device("cuda:0") if torch.cuda.is_available() else torch.device("cpu")
     render_dir = OUTPUT_DIR / "test_renders"
     render_dir.mkdir(parents=True, exist_ok=True)
@@ -189,6 +181,7 @@ def main():
     n_views, height, width, _ = target_images.shape
     print(f"Evaluating on {n_views} test views at {width}x{height}")
 
+    # Renders whole images, unlike the random rays used during training
     renderer = ImplicitRenderer(
         raysampler=NDCMultinomialRaysampler(
             image_height=height,
@@ -204,10 +197,12 @@ def main():
 
     rows, renders, targets = [], [], []
     for i in tqdm(range(n_views), desc="Rendering test views"):
+        # batched_forward renders in chunks to save memory
         rendered, _ = renderer(
             cameras=select_cameras(target_cameras, [i]),
             volumetric_function=model.batched_forward,
         )
+        # Keeps the RGB channels and drops the opacity channel
         prediction = rendered[0, ..., :3].clamp(0.0, 1.0)
         target = target_images[i]
 

@@ -1,81 +1,70 @@
-# ============================================================
-# config.yaml - single source of truth for our code
-# (baseline/, data/ and src/load_nerf_data.py are not configured here)
-# ============================================================
+# config.yaml is the single source of truth for our own code
+# baseline/, data/ and src/load_nerf_data.py are provided and not configured here
 
-# Preview
 preview:
-  the-preview: "Working successfully"
+  the-preview: "Working successfully"   # test message printed by LoadConfigurations
 
-# Default dataset for train.py / evaluate.py / smoke_test.py: lego | poster
-# Override per run without editing this file:  NERF_DATASET=poster python -m src.train
-active_dataset: lego
+active_dataset: lego             # default dataset (lego | poster), override per run with the NERF_DATASET variable
 
 
-# ------------------------------------------------------------
-# Shared settings (used for every dataset)
-# ------------------------------------------------------------
+# Shared settings used for every dataset
 model:
-  n_harmonic_functions: 60     # sin/cos pairs per input coordinate
-  omega0: 0.1                  # base frequency of the harmonic embedding
-  n_hidden_neurons: 256        # width of the MLP layers
+  n_harmonic_functions: 60       # number of sine and cosine pairs per input coordinate
+  omega0: 0.1                    # base frequency of the harmonic embedding
+  n_hidden_neurons: 256          # width of the hidden layers in the MLP
 
 render:
-  n_rays_per_image: 750        # random rays per image per training step
-  n_pts_per_ray: 128           # sample points along each ray
-  n_batches_full_render: 32    # chunks for full-image renders (more = less memory)
+  n_rays_per_image: 750          # random rays per image in each training step
+  n_pts_per_ray: 128             # sample points along each ray
+  n_batches_full_render: 32      # chunks for a full image render, more chunks use less memory
 
 train:
-  batch_size: 2                # images per step (baseline book value: 6)
-  learning_rate: 1.0e-4        # 1e-3 (book value) got stuck predicting empty space
-  lr_decay_at: 0.75            # fraction of n_iter where the LR drops
-  lr_decay_factor: 0.1         # LR multiplier at that point
-  huber_scaling: 0.1           # scaling of the Huber loss
-  seed: 1
-  vis_every: 1000              # save a preview image every N iterations
-  checkpoint_every: 2000       # save a checkpoint every N iterations
+  batch_size: 2                  # images per training step (the book uses 6)
+  learning_rate: 1.0e-4          # 1e-3 from the book got stuck predicting empty space
+  lr_decay_at: 0.75              # fraction of n_iter where the learning rate drops
+  lr_decay_factor: 0.1           # learning rate multiplier at that point
+  huber_scaling: 0.1             # scaling of the Huber loss
+  seed: 1                        # random seed for reproducible runs
+  vis_every: 1000                # save a preview image every N iterations
+  checkpoint_every: 2000         # save a checkpoint every N iterations
 
 evaluation:
-  max_test_views: null         # null = all test views; a number = evenly spaced subset (faster)
-  lpips_net: alex              # backbone for LPIPS: alex | vgg | squeeze
-  figures_dir: report/figures  # where report figures and tables are saved
-  loss_smoothing_window: 200   # moving average (iterations) for the loss-curve figure
+  max_test_views: null           # null uses all test views, a number uses an evenly spaced subset
+  lpips_net: alex                # LPIPS backbone (alex | vgg | squeeze)
+  figures_dir: report/figures    # where report figures and tables are saved
+  loss_smoothing_window: 200     # moving average window in iterations for the loss curve figure
 
-smoke_test:                    # short check run: python -m src.smoke_test
-  n_iter: 500
-  vis_every: 100
-  output_dir: outputs/smoke_test   # separate from the real results
-  min_loss_drop: 0.2           # pass if the loss drops by at least 20 %
+smoke_test:                      # short test run before a full training run
+  n_iter: 500                    # number of training iterations in the test run
+  vis_every: 100                 # save a preview image every N iterations
+  output_dir: outputs/smoke_test # kept separate from the real results
+  min_loss_drop: 0.2             # the test passes if the loss drops by at least 20 %
 
 
-# ------------------------------------------------------------
-# Per-dataset settings
-# Paths are relative to the project root.
-# resize_to is [height, width], or null for full resolution.
-# ------------------------------------------------------------
+# Settings per dataset, paths are relative to the project root
 datasets:
   lego:
-    data_dir: data/lego
-    output_dir: outputs/lego
-    n_iter: 10000              # loss stops improving around 10k iterations
-    resize_to: [200, 200]
-    znear: 0.01                # camera clipping planes (passed to load_nerf_data)
-    zfar: 10.0
-    min_depth: 2.0             # ray sampling range; cameras are ~4.03 units from the object
-    max_depth: 6.0
-    use_silhouette_loss: true  # lego has an alpha channel
-    test_every: null           # lego ships its own test split
-    n_figure_views: 4          # test views shown in the qualitative figure
+    data_dir: data/lego          # folder with the lego images and cameras
+    output_dir: outputs/lego     # checkpoints, previews and metrics for lego
+    n_iter: 10000                # number of training iterations
+    resize_to: [200, 200]        # image size as [height, width], null keeps full resolution
+    znear: 0.01                  # near clipping plane of the cameras
+    zfar: 10.0                   # far clipping plane of the cameras
+    min_depth: 2.0               # start of the ray sampling range, cameras are about 4 units away
+    max_depth: 6.0               # end of the ray sampling range
+    use_silhouette_loss: true    # lego has an alpha channel to compare against
+    test_every: null             # lego comes with its own test split
+    n_figure_views: 4            # test views shown in the qualitative figure
 
   poster:
-    data_dir: data/poster
-    output_dir: outputs/poster
-    n_iter: 60000              # real scene, needs longer training
-    resize_to: [320, 180]      # portrait, keeps the original 16:9 aspect ratio
-    znear: 0.01
-    zfar: 10.0
-    min_depth: 0.2             # TODO: tune from sparse_pc.ply (see data_check notebook)
-    max_depth: 10.0
-    use_silhouette_loss: false # no alpha channel, silhouette is all ones
-    test_every: 8              # hold out every 8th image as test
-    n_figure_views: 3          # portrait images, so fewer columns
+    data_dir: data/poster        # folder with the poster images and cameras
+    output_dir: outputs/poster   # checkpoints, previews and metrics for poster
+    n_iter: 60000                # a real scene needs longer training
+    resize_to: [320, 180]        # portrait size that keeps the original aspect ratio
+    znear: 0.01                  # near clipping plane of the cameras
+    zfar: 10.0                   # far clipping plane of the cameras
+    min_depth: 0.2               # start of the ray sampling range, based on sparse_pc.ply
+    max_depth: 10.0              # end of the ray sampling range
+    use_silhouette_loss: false   # no alpha channel, so the silhouette is all ones
+    test_every: 8                # every 8th image is held out as a test view
+    n_figure_views: 3            # fewer columns since the images are portrait
